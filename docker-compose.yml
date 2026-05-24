@@ -19,3 +19,4 @@ services:
     working_dir: /src
     profiles: ["tools"]
     entrypoint: []
+    privileged: true
