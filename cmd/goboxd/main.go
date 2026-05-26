@@ -4,30 +4,54 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"goboxd/internal/models"
 )
 
-// HealthResponse defines the JSON structure for the /healthz endpoint
-type HealthResponse struct {
-	Status string `json:"status"`
+// maxRequestSize is 256 KiB as per the spec
+const maxRequestSize = 256 * 1024
+
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func runHandler(w http.ResponseWriter, r *http.Request) {
+	// Security Fix: Reject payloads that are larger than 256 Kib to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
+
+	var req models.RunRequest
+	decoder := json.NewDecoder(r.body)
+	//Disallow unknown fields to strictly enforce API contract
+	decoder.DisallowUnknownFields()      
+	
+	if err := decoder.Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code": "bad_request",
+				"message": "INVALID JSON or playload exceeds 256 KiB limit",
+			},
+		})
+		return
+	}
+	// TODO: Pass the validated request to the SandBox Engine
+
+	// Placeholder Response until the engine is built
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(models.RunResponse{Status: "accepted"})
 }
 
 func main() {
-	// Define our router
 	mux := http.NewServeMux()
 
-	// Register the /healthz endpoint
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+	mux.HandleFunc("GET /healthz", healthzHandler)
+	mux.HandleFunc("POST /run", runHandler)
 
-		response := HealthResponse{Status: "ok"}
-		json.NewEncoder(w).Encode(response)
-	})
-
-	// Start the server on port 8080
 	log.Println("Starting goboxd server on :8080...")
-	err := http.ListenAndServe(":8080", mux)
-	if err != nil {
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
