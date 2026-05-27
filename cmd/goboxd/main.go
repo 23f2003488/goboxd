@@ -4,11 +4,21 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"goboxd/internal/models"
+	"github.com/thesouldev/goboxd/internal/config"
+	"github.com/thesouldev/goboxd/internal/models"
 )
 
 // maxRequestSize is 256 KiB as per the spec
 const maxRequestSize = 256 * 1024
+
+// init() runs automatically before main() starts
+func init() {
+	// Load the embedded YAML file at startup.
+	if err := config.LoadLanguages(); err != nil {
+		log.Fatalf("Fatal: Could not load language registry: %v", err)
+	}
+	log.Printf("Successfully loaded %d languages into registry", len(config.GlobalRegistry))
+}
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -21,7 +31,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
 
 	var req models.RunRequest
-	decoder := json.NewDecoder(r.body)
+	decoder := json.NewDecoder(r.Body)
 	//Disallow unknown fields to strictly enforce API contract
 	decoder.DisallowUnknownFields()      
 	
@@ -36,9 +46,24 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// TODO: Pass the validated request to the SandBox Engine
 
-	// Placeholder Response until the engine is built
+	// API contract validation - Language ID check
+	_, exists := config.GlobalRegistry[req.Language]
+	if !exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "invalid_language",
+				"message": "The requested language id is not supported",
+			},
+		})
+		return
+	}
+
+	// TODO: Pass req and langConfig to the Sandbox Engine
+	
+	// Temporary success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(models.RunResponse{Status: "accepted"})
