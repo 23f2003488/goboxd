@@ -23,14 +23,14 @@ func init() {
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 // sendError is a quick helper to format API errors consistently
 func sendError(w http.ResponseWriter, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]string{"code": code, "message": message},
 	})
 }
@@ -62,7 +62,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "bad_request", err.Error())
 		return
 	}
-	defer workspace.Cleanup()
+	defer func() { _ = workspace.Cleanup() }()
 
 	// --- PHASE 1: BUILD ---
 	var buildResult *models.StageResult
@@ -101,7 +101,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 				skippedTests = append(skippedTests, models.TestResult{Status: "not_executed"})
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(models.RunResponse{
+			_ = json.NewEncoder(w).Encode(models.RunResponse{
 				Status: "build_failed",
 				Build:  buildResult,
 				Tests:  skippedTests,
@@ -168,7 +168,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.RunResponse{
+	_ = json.NewEncoder(w).Encode(models.RunResponse{
 		Status: topLevelStatus,
 		Build:  buildResult,
 		Tests:  testResults,
