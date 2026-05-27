@@ -20,3 +20,15 @@ Suggested using `http.MaxBytesReader(w, r.Body, limit)` inside the HTTP handler 
 
 **What we used / didn't use:**
 Used `http.MaxBytesReader` configured to 256 KiB (`256 * 1024` bytes) inside our `runHandler` to strictly enforce the server-imposed max size limit and block large adversarial inputs before they hit our decoder.
+
+
+## 27-05-2026 · Securing workspace generation
+
+**Prompt:**
+How do I safely generate isolated temporary directories in Go for untrusted code execution, avoiding path traversal and UID collisions?
+
+**Response summary:**
+Suggested using Go's `os.MkdirTemp` to atomically generate collision-proof folders, writing a strict filename validator using `strings.Contains` to block `../` or slashes, and using `defer workspace.Cleanup()` to guarantee the folder is deleted when the request finishes.
+
+**What we used / didn't use:**
+Used the entire pattern. Created a `Workspace` struct to manage the lifecycle and enforce cleanup via `defer`, permanently closing the stale directory vulnerability.

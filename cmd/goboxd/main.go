@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"github.com/thesouldev/goboxd/internal/config"
 	"github.com/thesouldev/goboxd/internal/models"
+	"github.com/thesouldev/goboxd/internal/engine"
 )
 
 // maxRequestSize is 256 KiB as per the spec
@@ -47,8 +48,8 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// API contract validation - Language ID check
-	_, exists := config.GlobalRegistry[req.Language]
+	// API Contract Validation - Language ID Check
+	langConfig, exists := config.GlobalRegistry[req.Language]
 	if !exists {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -61,9 +62,31 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Pass req and langConfig to the Sandbox Engine
-	
-	// Temporary success response
+	// NEW: Determine the filename (fallback to registry default if not provided)
+	filename := req.SourceFilename
+	if filename == "" {
+		filename = langConfig.SourceFilename
+	}
+
+	// NEW: Setup the secure workspace
+	workspace, err := engine.SetupEnvironment(req.Source, filename)
+	if err != nil {
+		// Log the actual error for our debugging, but return 400 Bad Request to the user
+		log.Printf("Workspace error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "bad_request",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+	// FIX: Stale Directories. 'defer' guarantees Cleanup() runs when this function exits!
+	defer workspace.Cleanup() 
+
+	// Temporary success response showing we successfully created and deleted the folder
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(models.RunResponse{Status: "accepted"})
