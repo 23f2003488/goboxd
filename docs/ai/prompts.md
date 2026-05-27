@@ -32,3 +32,15 @@ Suggested using Go's `os.MkdirTemp` to atomically generate collision-proof folde
 
 **What we used / didn't use:**
 Used the entire pattern. Created a `Workspace` struct to manage the lifecycle and enforce cleanup via `defer`, permanently closing the stale directory vulnerability.
+
+
+## 27-05-2026 · Sandbox Execution & Output Bounding
+
+**Prompt:**
+How do I safely wrap `nsjail` execution in Go to prevent compiler flag injection and protect the host server from unbounded memory exhaustion (OOM) caused by runaway child output?
+
+**Response summary:**
+The AI suggested creating a custom `io.Writer` implementation (`cappedWriter`) that automatically truncates output and discards bytes after a 128 KiB threshold to prevent RAM exhaustion. For flag injection, it suggested a strict prefix-aware validation function against the YAML allowlist.
+
+**What we used / didn't use:**
+Implemented the custom `cappedWriter` and attached it directly to `exec.CommandContext.Stdout` and `Stderr`. Implemented the `ValidateFlags` function to strictly filter incoming flags against the language registry, explicitly closing two of the reference vulnerabilities.
