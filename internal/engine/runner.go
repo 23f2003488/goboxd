@@ -57,13 +57,15 @@ func ConstructArgs(template []string, lang models.LanguageConfig, flags []string
 func ExecuteSandbox(workspace *Workspace, limits models.Limits, cmd string, args []string, stdinData string) (string, string, int, error) {
 	// 1. Build the hardened nsjail arguments
 	nsjailArgs := []string{
-		"-Mo", "--chroot", "/",
+		"-Mo", "-q", "--chroot", "/",
 		"--bindmount", fmt.Sprintf("%s:/workspace", workspace.HostDir),
 		"--cwd", "/workspace",
 		"--time_limit", fmt.Sprintf("%d", limits.WallTimeS),
 		"--rlimit_as", fmt.Sprintf("%d", limits.MemoryKB*1024),
-		"--rlimit_fsize", "10", // 10MB file size limit to prevent disk starvation
-		"--disable_clone_newnet", // Disable internet access
+		"--rlimit_fsize", "10", 
+		"--disable_clone_newnet",
+		"--env", "PATH=/usr/local/bin:/usr/bin:/bin", 
+		"--env", "TMPDIR=/workspace",
 		"--",
 		cmd,
 	}

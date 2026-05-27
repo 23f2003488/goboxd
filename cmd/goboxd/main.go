@@ -4,17 +4,16 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
+
 	"github.com/thesouldev/goboxd/internal/config"
-	"github.com/thesouldev/goboxd/internal/models"
 	"github.com/thesouldev/goboxd/internal/engine"
+	"github.com/thesouldev/goboxd/internal/models"
 )
 
-// maxRequestSize is 256 KiB as per the spec
 const maxRequestSize = 256 * 1024
 
-// init() runs automatically before main() starts
 func init() {
-	// Load the embedded YAML file at startup.
 	if err := config.LoadLanguages(); err != nil {
 		log.Fatalf("Fatal: Could not load language registry: %v", err)
 	}
@@ -27,74 +26,153 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+// sendError is a quick helper to format API errors consistently
+func sendError(w http.ResponseWriter, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{"code": code, "message": message},
+	})
+}
+
 func runHandler(w http.ResponseWriter, r *http.Request) {
-	// Security Fix: Reject payloads that are larger than 256 Kib to prevent memory exhaustion
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
 
 	var req models.RunRequest
 	decoder := json.NewDecoder(r.Body)
-	//Disallow unknown fields to strictly enforce API contract
-	decoder.DisallowUnknownFields()      
-	
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": map[string]string{
-				"code": "bad_request",
-				"message": "INVALID JSON or playload exceeds 256 KiB limit",
-			},
-		})
+		sendError(w, "bad_request", "Invalid JSON or payload exceeds size limit")
 		return
 	}
 
-	// API Contract Validation - Language ID Check
 	langConfig, exists := config.GlobalRegistry[req.Language]
 	if !exists {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": map[string]string{
-				"code":    "invalid_language",
-				"message": "The requested language id is not supported",
-			},
-		})
+		sendError(w, "invalid_language", "The requested language id is not supported")
 		return
 	}
 
-	// NEW: Determine the filename (fallback to registry default if not provided)
 	filename := req.SourceFilename
 	if filename == "" {
 		filename = langConfig.SourceFilename
 	}
 
-	// NEW: Setup the secure workspace
 	workspace, err := engine.SetupEnvironment(req.Source, filename)
 	if err != nil {
-		// Log the actual error for our debugging, but return 400 Bad Request to the user
-		log.Printf("Workspace error: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": map[string]string{
-				"code":    "bad_request",
-				"message": err.Error(),
-			},
-		})
+		sendError(w, "bad_request", err.Error())
 		return
 	}
-	// FIX: Stale Directories. 'defer' guarantees Cleanup() runs when this function exits!
-	defer workspace.Cleanup() 
+	defer workspace.Cleanup()
 
-	// Temporary success response showing we successfully created and deleted the folder
+	// --- PHASE 1: BUILD ---
+	var buildResult *models.StageResult
+	if langConfig.Build != nil {
+		buildLimits := langConfig.Build.Limits
+		var reqFlags []string
+		
+		if req.Build != nil {
+			reqFlags = req.Build.Flags
+			if req.Build.Limits != nil {
+				if req.Build.Limits.WallTimeS > 0 { buildLimits.WallTimeS = req.Build.Limits.WallTimeS }
+				if req.Build.Limits.MemoryKB > 0 { buildLimits.MemoryKB = req.Build.Limits.MemoryKB }
+			}
+		}
+
+		// Security: Validate compiler flags against allowlist
+		if err := engine.ValidateFlags(reqFlags, langConfig.Build.FlagAllowlist); err != nil {
+			sendError(w, "disallowed_flag", err.Error())
+			return
+		}
+
+		buildArgs := engine.ConstructArgs(langConfig.Build.Args, langConfig, reqFlags)
+		stdout, stderr, duration, err := engine.ExecuteSandbox(workspace, buildLimits, langConfig.Build.Cmd, buildArgs, "")
+
+		buildResult = &models.StageResult{
+			Stdout:     stdout,
+			Stderr:     stderr,
+			DurationMs: duration,
+			Status:     "ok",
+		}
+
+		if err != nil {
+			buildResult.Status = "failed"
+			var skippedTests []models.TestResult
+			for range req.Tests {
+				skippedTests = append(skippedTests, models.TestResult{Status: "not_executed"})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(models.RunResponse{
+				Status: "build_failed",
+				Build:  buildResult,
+				Tests:  skippedTests,
+			})
+			return
+		}
+	}
+
+	// --- PHASE 2: RUN ---
+	runLimits := langConfig.Run.Limits
+	var runFlags []string
+	if req.Run != nil {
+		runFlags = req.Run.Flags
+		if req.Run.Limits != nil {
+			if req.Run.Limits.WallTimeS > 0 { runLimits.WallTimeS = req.Run.Limits.WallTimeS }
+			if req.Run.Limits.MemoryKB > 0 { runLimits.MemoryKB = req.Run.Limits.MemoryKB }
+		}
+	}
+
+	runArgs := engine.ConstructArgs(langConfig.Run.Args, langConfig, runFlags)
+	var testResults []models.TestResult
+	topLevelStatus := "accepted"
+
+	for _, test := range req.Tests {
+		runCmd := strings.ReplaceAll(langConfig.Run.Cmd, "{{artifact}}", langConfig.Artifact)
+		runCmd = strings.ReplaceAll(runCmd, "{{source}}", filename)
+
+		stdout, stderr, duration, err := engine.ExecuteSandbox(workspace, runLimits, runCmd, runArgs, test.Stdin)
+
+		status := "accepted"
+		if err != nil {
+			// Basic status mapping for execution errors
+			if duration >= runLimits.WallTimeS*1000 {
+				status = "time_exceeded"
+			} else {
+				status = "runtime_error"
+			}
+		} else {
+			// Strict output validation
+			if stdout != test.ExpectedStdout {
+				if strings.TrimSpace(stdout) == strings.TrimSpace(test.ExpectedStdout) {
+					status = "output_whitespace_mismatch"
+				} else {
+					status = "wrong_output"
+				}
+			}
+		}
+
+		testResults = append(testResults, models.TestResult{
+			Status:     status,
+			Stdout:     stdout,
+			Stderr:     stderr,
+			DurationMs: duration,
+		})
+
+		// Track the first failure for the top-level status
+		if status != "accepted" && topLevelStatus == "accepted" {
+			topLevelStatus = status
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(models.RunResponse{Status: "accepted"})
+	json.NewEncoder(w).Encode(models.RunResponse{
+		Status: topLevelStatus,
+		Build:  buildResult,
+		Tests:  testResults,
+	})
 }
 
 func main() {
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.HandleFunc("POST /run", runHandler)
 
