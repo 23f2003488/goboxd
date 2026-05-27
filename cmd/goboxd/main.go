@@ -140,9 +140,13 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 				status = "runtime_error"
 			}
 		} else {
-			// Strict output validation
-			if stdout != test.ExpectedStdout {
-				if strings.TrimSpace(stdout) == strings.TrimSpace(test.ExpectedStdout) {
+			// CP Standard: Strip trailing newlines from both before comparing
+			cleanStdout := strings.TrimRight(stdout, "\r\n")
+			cleanExpected := strings.TrimRight(test.ExpectedStdout, "\r\n")
+
+			if cleanStdout != cleanExpected {
+				// If they still don't match, check if it's just a space/tab issue
+				if strings.TrimSpace(cleanStdout) == strings.TrimSpace(cleanExpected) {
 					status = "output_whitespace_mismatch"
 				} else {
 					status = "wrong_output"
